@@ -43,6 +43,11 @@ var ErrInterrupt = errors.New(os.Interrupt.String())
 // of the process's stdout. A nil writer puts the output back.
 func SetRenderOutput(w io.Writer) { term.SetRenderOutput(w) }
 
+// SetQueryFile routes the terminal's size and cursor-position queries
+// through f, instead of the process's stderr. A nil file puts the
+// queries back on stderr.
+func SetQueryFile(f *os.File) { term.SetQueryFile(f) }
+
 // SetRefreshHook sets the function the readline loop calls before every
 // UI refresh, on the editor's own goroutine. A nil function removes it.
 func (rl *Shell) SetRefreshHook(f func()) {

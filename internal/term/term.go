@@ -15,6 +15,20 @@ var termFile = os.Stderr
 // fallback terminal width when we can't get it through query.
 var defaultTermWidth = 80
 
+// SetQueryFile routes the terminal's size and cursor-position queries
+// through f. A nil file puts the queries back on stderr, the default:
+// stderr usually stays attached to the controlling terminal, giving a
+// reliable terminal size even when the program's output is piped. A
+// host that renders through a writer other than stderr and needs the
+// queries to read the same terminal points it here.
+func SetQueryFile(f *os.File) {
+	if f == nil {
+		termFile = os.Stderr
+		return
+	}
+	termFile = f
+}
+
 // GetWidth returns the width of the terminal or 80 if it cannot be established.
 func GetWidth() (termWidth int) {
 	var err error
