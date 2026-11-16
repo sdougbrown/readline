@@ -39,6 +39,14 @@ import (
 // is pressed on the keyboard. The sequence is usually Ctrl-C.
 var ErrInterrupt = errors.New(os.Interrupt.String())
 
+// SetRenderOutput routes the editor's rendered frames through w, instead
+// of the process's stdout. A nil writer puts the output back.
+func SetRenderOutput(w io.Writer) { term.SetRenderOutput(w) }
+
+// SetRefreshHook sets the function the readline loop calls before every
+// UI refresh, on the editor's own goroutine. A nil function removes it.
+func (rl *Shell) SetRefreshHook(f func()) { rl.refreshHook = f }
+
 // Readline displays the readline prompt and reads user input.
 // It can return from the call because of different things:
 //
@@ -98,6 +106,12 @@ func (rl *Shell) Readline() (string, error) {
 		// here on the main loop, before refreshing, so an active menu rebuilds
 		// in place while rendering stays single-writer.
 		rl.completer.ApplyRegen()
+
+		// A host that draws around the editor resizes its drawing
+		// before the frame renders.
+		if rl.refreshHook != nil {
+			rl.refreshHook()
+		}
 
 		// Since we always update helpers after being asked to read
 		// for user input again, we do it before actually reading it.

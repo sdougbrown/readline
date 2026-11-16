@@ -8,6 +8,20 @@ import (
 	"sync"
 )
 
+// SetRenderOutput routes rendered terminal output through w. An empty w
+// puts the output back on os.Stdout.
+func SetRenderOutput(w io.Writer) {
+	outMu.Lock()
+	defer outMu.Unlock()
+
+	if w == nil {
+		renderOut = nil
+		return
+	}
+
+	renderOut = w
+}
+
 // renderOut, when non-nil, overrides the destination for rendered terminal
 // output. It is a test seam; in production it stays nil and output goes to
 // os.Stdout, resolved at call time so that tests redirecting os.Stdout (the

@@ -67,7 +67,11 @@ func (e *Engine) Refresh() {
 	// there's nothing below to clear and we can skip. If we're not, we use
 	// CUD + clear + CUU to clean up artifacts from previous renders.
 	termHeight := term.GetLength()
-	atBottom := (e.startRows + e.lineRows) >= termHeight
+	// A host that draws around the editor (a pinned footer) reserves the
+	// rows below the input itself: without the cursor-position probe the
+	// start row is unknown, and the erase below would spend the rows the
+	// host owns rather than clear artifacts.
+	atBottom := e.startRows < 0 || (e.startRows+e.lineRows) >= termHeight
 
 	if !atBottom {
 		term.MoveCursorDown(1)
