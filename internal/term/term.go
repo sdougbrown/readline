@@ -3,6 +3,7 @@ package term
 import (
 	"fmt"
 	"os"
+	"sync"
 )
 
 // termFile is the file descriptor used for all low-level terminal queries (size,
@@ -11,6 +12,19 @@ import (
 // whereas stderr usually stays attached to the controlling terminal, giving a
 // reliable terminal size even when the program's output is piped.
 var termFile = os.Stderr
+
+// queryMu guards termFile: a host that swaps the query target does so
+// while the editor's goroutine still reads it, and the swap must not
+// race a size or cursor query in flight.
+var queryMu sync.Mutex
+
+// queryFile returns the file the terminal queries read, under the
+// query lock.
+func queryFile() *os.File {
+	queryMu.Lock()
+	defer queryMu.Unlock()
+	return termFile
+}
 
 // fallback terminal width when we can't get it through query.
 var defaultTermWidth = 80
@@ -22,6 +36,8 @@ var defaultTermWidth = 80
 // host that renders through a writer other than stderr and needs the
 // queries to read the same terminal points it here.
 func SetQueryFile(f *os.File) {
+	queryMu.Lock()
+	defer queryMu.Unlock()
 	if f == nil {
 		termFile = os.Stderr
 		return
@@ -32,7 +48,7 @@ func SetQueryFile(f *os.File) {
 // GetWidth returns the width of the terminal or 80 if it cannot be established.
 func GetWidth() (termWidth int) {
 	var err error
-	fd := int(termFile.Fd())
+	fd := int(queryFile().Fd())
 	termWidth, _, err = GetSize(fd)
 
 	if err != nil || termWidth == 0 {
@@ -45,7 +61,7 @@ func GetWidth() (termWidth int) {
 // GetLength returns the length of the terminal
 // (Y length), or 80 if it cannot be established.
 func GetLength() int {
-	termFd := int(termFile.Fd())
+	termFd := int(queryFile().Fd())
 
 	_, length, err := GetSize(termFd)
 	if err != nil || length == 0 {
