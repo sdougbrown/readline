@@ -32,6 +32,12 @@ type Engine struct {
 	compRows       int
 	primaryPrinted bool
 
+	// refreshHook, when set, runs before primary printing and at the
+	// start of every refresh: the host prepares its drawing there and
+	// positions the terminal at the input prompt's origin, and the
+	// engine skips its own relative cursor recovery for those frames.
+	refreshHook func()
+
 	// commentRegex is the compiled comment-highlight pattern. It is rebuilt
 	// only when the comment-begin option changes, not on every refresh.
 	commentToken string
@@ -115,9 +121,16 @@ func (e *Engine) coordinatesLine(suggested bool) *core.Line {
 // There are relatively few cases where you want to use this.
 // It is currently only used when using clear-screen commands.
 func (e *Engine) PrintPrimaryPrompt() {
+	if e.refreshHook != nil {
+		e.refreshHook()
+	}
 	e.prompt.PrimaryPrint()
 	e.primaryPrinted = true
 }
+
+// SetRefreshHook sets the function the engine calls before primary
+// printing and at the start of every refresh. A nil function removes it.
+func (e *Engine) SetRefreshHook(f func()) { e.refreshHook = f }
 
 // ClearHelpers clears the hint and completion sections below the line.
 func (e *Engine) ClearHelpers() {

@@ -45,7 +45,10 @@ func SetRenderOutput(w io.Writer) { term.SetRenderOutput(w) }
 
 // SetRefreshHook sets the function the readline loop calls before every
 // UI refresh, on the editor's own goroutine. A nil function removes it.
-func (rl *Shell) SetRefreshHook(f func()) { rl.refreshHook = f }
+func (rl *Shell) SetRefreshHook(f func()) {
+	rl.refreshHook = f
+	rl.Display.SetRefreshHook(f)
+}
 
 // Readline displays the readline prompt and reads user input.
 // It can return from the call because of different things:
@@ -74,12 +77,21 @@ func (rl *Shell) Readline() (string, error) {
 		defer term.DisableBracketedPaste()
 	}
 
-	// Prompts and cursor styles
+	// Prompts and cursor styles. A host that draws around the editor
+	// initializes the new read's buffer before its hook prepares the
+	// drawing and the primary prompt prints: otherwise the preparation
+	// sees the previous read's buffer.
+	if rl.refreshHook != nil {
+		rl.init()
+	}
+
 	rl.Display.PrintPrimaryPrompt()
 	defer rl.Display.RefreshTransient()
 	defer term.WriteString(keymap.CursorStyle("default").String())
 
-	rl.init()
+	if rl.refreshHook == nil {
+		rl.init()
+	}
 
 	// Terminal resize events
 	resize := display.WatchResize(rl.Display)
@@ -106,12 +118,6 @@ func (rl *Shell) Readline() (string, error) {
 		// here on the main loop, before refreshing, so an active menu rebuilds
 		// in place while rendering stays single-writer.
 		rl.completer.ApplyRegen()
-
-		// A host that draws around the editor resizes its drawing
-		// before the frame renders.
-		if rl.refreshHook != nil {
-			rl.refreshHook()
-		}
 
 		// Since we always update helpers after being asked to read
 		// for user input again, we do it before actually reading it.

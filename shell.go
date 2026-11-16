@@ -61,10 +61,11 @@ type Shell struct {
 	// they are inserted into the input buffer.
 	PasteTransformer func(text string) string
 
-	// refreshHook, when set, runs before every UI refresh inside the
-	// readline loop, on the editor's own goroutine: a host that draws
-	// around the editor (a pinned footer, a statusline) resizes its own
-	// drawing here, before the frame renders.
+	// refreshHook, when set, runs before the primary prompt prints and
+	// before every UI refresh, on the editor's own goroutine: a host
+	// that draws around the editor (a pinned footer, a statusline)
+	// prepares its drawing there and positions the terminal at the
+	// input prompt's origin. It must not recursively refresh the editor.
 	refreshHook func()
 
 	// Completer is a function that produces completions.

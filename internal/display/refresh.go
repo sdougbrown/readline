@@ -22,11 +22,19 @@ func (e *Engine) Refresh() {
 
 	// 1. Preparation & Coordinates
 	term.WriteString(term.HideCursor)
-	// Go back to the first column, and if the primary prompt
-	// was not printed yet, back up to the line's beginning row.
+	// Go back to the first column, and if the primary prompt was not
+	// printed yet, back up to the line's beginning row. A host that
+	// draws around the editor has already positioned the terminal at
+	// the prompt's origin in its hook, so the engine skips its own
+	// relative recovery there: the stale cursorRow it would use no
+	// longer describes the terminal under the host's geometry.
+	hostPositioned := e.refreshHook != nil
+	if hostPositioned {
+		e.refreshHook()
+	}
 	term.MoveCursorBackwards(term.GetWidth())
 
-	if !e.primaryPrinted {
+	if !hostPositioned && !e.primaryPrinted {
 		term.MoveCursorUp(e.cursorRow)
 	}
 	// 2. Primary Prompt
