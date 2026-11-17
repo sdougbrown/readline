@@ -3,7 +3,9 @@ package core
 import (
 	"errors"
 	"io"
+	"os"
 	"testing"
+	"time"
 
 	"github.com/reeflective/readline/inputrc"
 )
@@ -120,5 +122,63 @@ func TestReadKeySkipsEmptyReads(t *testing.T) {
 
 	if key != 'x' {
 		t.Fatalf("expected key %q, got %q", 'x', key)
+	}
+}
+
+// TestKeysAbortEndsAParkedWait covers the shutdown race: a Keys whose wait
+// loop is parked in the poll must leave the park when Abort says the stream
+// is over, and the wait that follows reads as ended instead of parking again.
+// A reader that stays parked holds the terminal and reads the next shell's
+// keystrokes.
+func TestKeysAbortEndsAParkedWait(t *testing.T) {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("opening the pipe: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = reader.Close()
+		_ = writer.Close()
+	})
+
+	original := Stdin
+	Stdin = reader
+	t.Cleanup(func() { Stdin = original })
+
+	keys := &Keys{}
+	keys.InitWake()
+	t.Cleanup(func() { keys.CloseWake() })
+
+	waited := make(chan struct{})
+	go func() {
+		WaitAvailableKeys(keys, &inputrc.Config{})
+		close(waited)
+	}()
+
+	// The wait is parked: no keys were written, so only the abort can
+	// bring it back.
+	keys.Abort()
+
+	select {
+	case <-waited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the parked wait did not return after the abort")
+	}
+
+	if !keys.IsEOF() {
+		t.Error("the aborted keys do not read as ended")
+	}
+
+	// A wait that starts after the abort reads as ended too, instead of
+	// parking on a stream nobody writes again.
+	done := make(chan struct{})
+	go func() {
+		WaitAvailableKeys(keys, &inputrc.Config{})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a wait after the abort parked again")
 	}
 }

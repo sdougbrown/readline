@@ -56,6 +56,18 @@ type Keys struct {
 func WaitAvailableKeys(keys *Keys, cfg *inputrc.Config) {
 	keys.cfg = cfg
 
+	// An aborted stream reads as ended: the wait returns instead of
+	// parking on input nobody will write.
+	if keys.IsEOF() {
+		return
+	}
+
+	// An aborted stream reads as ended: the wait returns instead of
+	// parking on input nobody will write.
+	if keys.IsEOF() {
+		return
+	}
+
 	if len(keys.buf) > 0 && !keys.mustWait {
 		return
 	}
@@ -137,6 +149,17 @@ func (k *Keys) Empty() bool {
 	defer k.mutex.RUnlock()
 
 	return len(k.buf) == 0 && len(k.macroKeys) == 0
+}
+
+// Abort ends a pending input read: a shell parked in its read loop returns
+// as ended, and a wait that starts afterwards does not park on a stream
+// nobody writes again. Keys already buffered still dispatch, and the caller
+// deciding the stream is over is the only thing the recording rides on.
+func (k *Keys) Abort() {
+	k.mutex.Lock()
+	k.eof = true
+	k.mutex.Unlock()
+	k.RequestRefresh()
 }
 
 // IsEOF returns true if the input stream has reached the end.
