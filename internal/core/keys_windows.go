@@ -87,15 +87,7 @@ func (k *Keys) readInputFiltered() (keys []byte, err error) {
 			continue
 		}
 
-		// Always attempt to extract cursor position info.
-		// If found, strip it and keep the remaining keys.
-		cursor, keys := k.extractCursorPos(input)
-
-		if len(cursor) > 0 {
-			k.cursor <- cursor
-		}
-
-		return keys, nil
+		return k.filterCursorReplies(input), nil
 	}
 }
 

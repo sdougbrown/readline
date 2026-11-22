@@ -125,6 +125,64 @@ func TestReadKeySkipsEmptyReads(t *testing.T) {
 	}
 }
 
+func TestWaitAvailableKeysIgnoresUnsolicitedCursorReplies(t *testing.T) {
+	withStubStdin(t,
+		readStep{data: []byte("\x1b[12;8R")},
+		readStep{data: []byte("x\x1b[12;8R\x03")},
+	)
+	keys := &Keys{}
+	done := make(chan struct{})
+	go func() {
+		WaitAvailableKeys(keys, &inputrc.Config{})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("a cursor reply blocked the key reader")
+	}
+	for _, want := range []byte{'x', 3} {
+		if got, empty := keys.Pop(); empty || got != want {
+			t.Fatalf("got key %q (empty: %t), want %q", got, empty, want)
+		}
+	}
+	if got, empty := keys.Pop(); !empty {
+		t.Fatalf("unexpected key after Ctrl-C: %q", got)
+	}
+}
+
+func TestWaitAvailableKeysDoesNotWaitForTheCursorQueryToDrain(t *testing.T) {
+	withStubStdin(t,
+		readStep{data: []byte("\x1b[12;8R")},
+		readStep{data: []byte("\x1b[12;8R\x03")},
+	)
+	replies := make(chan []byte, 1)
+	keys := &Keys{cursor: replies}
+	done := make(chan struct{})
+	go func() {
+		WaitAvailableKeys(keys, &inputrc.Config{})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("a duplicate reply blocked the key reader")
+	}
+	select {
+	case reply := <-replies:
+		if got := string(reply); got != "\x1b[12;8R" {
+			t.Fatalf("unexpected cursor reply %q", got)
+		}
+	default:
+		t.Fatal("the cursor query did not receive its reply")
+	}
+	if got, empty := keys.Pop(); empty || got != 3 {
+		t.Fatalf("Ctrl-C did not reach the key reader: got %q (empty: %t)", got, empty)
+	}
+}
+
 // TestKeysAbortEndsAParkedWait covers the shutdown race: a Keys whose wait
 // loop is parked in the poll must leave the park when Abort says the stream
 // is over, and the wait that follows reads as ended instead of parking again.

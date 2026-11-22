@@ -37,7 +37,7 @@ type Keys struct {
 	waiting   bool        // Currently waiting for keys on stdin.
 	reading   bool        // Currently reading keys out of the main loop.
 	keysOnce  chan []byte // Passing keys from the main routine.
-	cursor    chan []byte // Cursor coordinates has been read on stdin.
+	cursor    chan []byte // Reply to a pending cursor query, or nil.
 	resize    chan bool   //nolint:unused // Resize events on Windows are sent on stdin; consumed only by the windows build.
 
 	wakeMu    sync.Mutex // Guards the wake fields against RequestRefresh (other goroutine).
@@ -79,7 +79,6 @@ func WaitAvailableKeys(keys *Keys, cfg *inputrc.Config) {
 
 	keys.mutex.Lock()
 	keys.waiting = true
-	keys.cursor = make(chan []byte)
 	keys.mutex.Unlock()
 
 	defer func() {
@@ -120,9 +119,13 @@ func WaitAvailableKeys(keys *Keys, cfg *inputrc.Config) {
 			continue
 		}
 
+		keys.mutex.RLock()
+		reading, keysOnce := keys.reading, keys.keysOnce
+		keys.mutex.RUnlock()
+
 		switch {
-		case keys.reading:
-			keys.keysOnce <- keyBuf
+		case reading:
+			keysOnce <- keyBuf
 			continue
 
 		default:
@@ -325,15 +328,17 @@ func FlushUsed(keys *Keys) {
 // returns them instead of storing them in the stack, along with
 // an indication on whether this key is an escape/abort one.
 func (k *Keys) ReadKey() (key rune, isAbort bool) {
-	k.mutex.RLock()
-	k.keysOnce = make(chan []byte)
+	k.mutex.Lock()
+	keysOnce := make(chan []byte)
+	k.keysOnce = keysOnce
 	k.reading = true
-	k.mutex.RUnlock()
+	waiting := k.waiting
+	k.mutex.Unlock()
 
 	defer func() {
-		k.mutex.RLock()
+		k.mutex.Lock()
 		k.reading = false
-		k.mutex.RUnlock()
+		k.mutex.Unlock()
 	}()
 
 	switch {
@@ -341,8 +346,8 @@ func (k *Keys) ReadKey() (key rune, isAbort bool) {
 		key = k.macroKeys[0]
 		k.macroKeys = k.macroKeys[1:]
 
-	case k.waiting:
-		buf := <-k.keysOnce
+	case waiting:
+		buf := <-keysOnce
 		if len(buf) == 0 {
 			return rune(0), true
 		}
@@ -426,14 +431,19 @@ func (k *Keys) Feed(begin bool, keys ...rune) {
 	}
 }
 
-func (k *Keys) extractCursorPos(keys []byte) (cursor, remain []byte) {
-	if !rxRcvCursorPos.Match(keys) {
-		return cursor, keys
+func (k *Keys) filterCursorReplies(keys []byte) []byte {
+	replies := rxRcvCursorPos.FindAll(keys, -1)
+	if len(replies) == 0 {
+		return keys
 	}
 
-	allCursors := rxRcvCursorPos.FindAll(keys, -1)
-	cursor = allCursors[len(allCursors)-1]
-	remain = rxRcvCursorPos.ReplaceAll(keys, nil)
+	// A late reply or a duplicate must not hold up keyboard input.
+	k.mutex.RLock()
+	select {
+	case k.cursor <- replies[len(replies)-1]:
+	default:
+	}
+	k.mutex.RUnlock()
 
-	return
+	return rxRcvCursorPos.ReplaceAll(keys, nil)
 }
