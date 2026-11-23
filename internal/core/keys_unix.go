@@ -33,8 +33,26 @@ func (k *Keys) GetCursorPos() (x, y int) {
 	// screen, not still sitting in the output buffer.
 	term.FlushBuffer()
 
-	// Echo the query and wait for the main key
-	// reading routine to send us the response back.
+	k.mutex.Lock()
+	var reply chan []byte
+	if k.waiting || k.reading {
+		if k.cursor != nil {
+			k.mutex.Unlock()
+			return -1, -1
+		}
+		// The input reader can see the reply before the query write returns.
+		reply = make(chan []byte, 1)
+		k.cursor = reply
+	}
+	k.mutex.Unlock()
+	if reply != nil {
+		defer func() {
+			k.mutex.Lock()
+			k.cursor = nil
+			k.mutex.Unlock()
+		}()
+	}
+
 	fmt.Print("\x1b[6n")
 
 	// In order not to get stuck with an input that might be user-one
@@ -42,10 +60,9 @@ func (k *Keys) GetCursorPos() (x, y int) {
 	// queried cursor yet), we keep reading from stdin until we find the cursor response.
 	// Everything else is passed back as user input.
 	for {
-		switch {
-		case k.waiting, k.reading:
-			cursor = <-k.cursor
-		default:
+		if reply != nil {
+			cursor = <-reply
+		} else {
 			buf := make([]byte, keyScanBufSize)
 
 			read, err := os.Stdin.Read(buf)
@@ -105,15 +122,7 @@ func (k *Keys) readInputFiltered() (keys []byte, err error) {
 		return nil, err
 	}
 
-	// Always attempt to extract cursor position info.
-	// If found, strip it and keep the remaining keys.
-	cursor, keys := k.extractCursorPos(buf[:read])
-
-	if len(cursor) > 0 {
-		k.cursor <- cursor
-	}
-
-	return keys, nil
+	return k.filterCursorReplies(buf[:read]), nil
 }
 
 // readStdin reads one chunk of input, but first waits (via poll) for stdin to
