@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"os"
@@ -15,6 +16,10 @@ import (
 
 const (
 	keyScanBufSize = 1024
+
+	// maxPendingOSC bounds how many bytes of an unterminated OSC reply are held
+	// across reads, so a terminal that never finishes one cannot hold up input.
+	maxPendingOSC = 256
 )
 
 // Stdin is used by the Keys struct to read and write keys.
@@ -22,7 +27,10 @@ const (
 // custom io.Readers, such as the one used on Windows.
 var Stdin io.ReadCloser = os.Stdin
 
-var rxRcvCursorPos = regexp.MustCompile(`\x1b\[([0-9]+);([0-9]+)R`)
+var (
+	rxRcvCursorPos = regexp.MustCompile(`\x1b\[([0-9]+);([0-9]+)R`)
+	oscIntroducer  = []byte{0x1b, ']'}
+)
 
 // errInputWake is returned by the input read when it was interrupted by an
 // async refresh request (RequestRefresh) rather than by actual key input.
@@ -39,6 +47,10 @@ type Keys struct {
 	keysOnce  chan []byte // Passing keys from the main routine.
 	cursor    chan []byte // Reply to a pending cursor query, or nil.
 	resize    chan bool   //nolint:unused // Resize events on Windows are sent on stdin; consumed only by the windows build.
+
+	// pendingOSC holds the bytes of an unterminated OSC reply from the
+	// previous read, until the next chunk completes or rules it out.
+	pendingOSC []byte
 
 	wakeMu    sync.Mutex // Guards the wake fields against RequestRefresh (other goroutine).
 	wakeR     int        // Read end of the async-refresh wake pipe.
@@ -135,9 +147,9 @@ func WaitAvailableKeys(keys *Keys, cfg *inputrc.Config) {
 				keyBuf = []byte(strutil.ConvertMeta([]rune(string(keyBuf))))
 			}
 
-			keys.mutex.RLock()
+			keys.mutex.Lock()
 			keys.buf = append(keys.buf, keyBuf...)
-			keys.mutex.RUnlock()
+			keys.mutex.Unlock()
 		}
 
 		return
@@ -161,6 +173,7 @@ func (k *Keys) Empty() bool {
 func (k *Keys) Abort() {
 	k.mutex.Lock()
 	k.eof = true
+	k.pendingOSC = nil
 	k.mutex.Unlock()
 	k.RequestRefresh()
 }
@@ -431,7 +444,11 @@ func (k *Keys) Feed(begin bool, keys ...rune) {
 	}
 }
 
+// filterCursorReplies strips cursor-position and OSC replies from stdin input.
+// It forwards the last cursor-position reply to any pending query.
 func (k *Keys) filterCursorReplies(keys []byte) []byte {
+	keys = k.filterOSCReplies(keys)
+
 	replies := rxRcvCursorPos.FindAll(keys, -1)
 	if len(replies) == 0 {
 		return keys
@@ -446,4 +463,123 @@ func (k *Keys) filterCursorReplies(keys []byte) []byte {
 	k.mutex.RUnlock()
 
 	return rxRcvCursorPos.ReplaceAll(keys, nil)
+}
+
+// filterOSCReplies strips 7-bit OSC replies (\x1b]...\x07 or \x1b]...\x1b\\)
+// from stdin input. Terminals answer queries such as OSC 11 on the same
+// stream as keys, so unfiltered replies would become prompt input.
+//
+// A reply split across reads is held on the Keys until the next chunk completes
+// or rules it out. Only the two-byte introducer \x1b] starts a hold: a bare
+// escape at the end of a chunk is a normal Escape key and passes through.
+func (k *Keys) filterOSCReplies(keys []byte) []byte {
+	k.mutex.Lock()
+	pending := k.pendingOSC
+	k.pendingOSC = nil
+	k.mutex.Unlock()
+
+	// Nothing to carry over and no introducer in this chunk: it is all keys.
+	if len(pending) == 0 && !bytes.Contains(keys, oscIntroducer) {
+		return keys
+	}
+
+	if len(pending) > 0 {
+		keys = append(pending, keys...)
+	}
+
+	out := make([]byte, 0, len(keys))
+
+	for i := 0; i < len(keys); {
+		// Only a complete 7-bit introducer is a candidate. The 8-bit C1 forms
+		// are not matched: their bytes are valid UTF-8 continuation bytes.
+		if i+1 >= len(keys) || keys[i] != byte(inputrc.Esc) || keys[i+1] != ']' {
+			out = append(out, keys[i])
+			i++
+
+			continue
+		}
+
+		size, result := scanOSCReply(keys[i+2:])
+
+		switch result {
+		case oscComplete:
+			i += 2 + size
+
+		case oscIncomplete:
+			rest := keys[i:]
+
+			// Too long to still be a reply: stop holding and let the bytes
+			// through, so a stuck sequence never wedges real input.
+			if len(rest) > maxPendingOSC {
+				out = append(out, rest...)
+				i = len(keys)
+
+				continue
+			}
+
+			k.mutex.Lock()
+			if !k.eof {
+				k.pendingOSC = append([]byte(nil), rest...)
+			}
+			k.mutex.Unlock()
+
+			return out
+
+		case oscAbort:
+			// Not a terminal reply: pass the introducer through and keep
+			// scanning the rest, so the user's keys are never swallowed.
+			out = append(out, keys[i])
+			i++
+		}
+	}
+
+	return out
+}
+
+// oscScan reports how a candidate OSC sequence is to be handled.
+type oscScan int
+
+const (
+	// oscComplete: the payload ends with a valid terminator.
+	oscComplete oscScan = iota
+	// oscIncomplete: the payload may still be completed by the next read.
+	oscIncomplete
+	// oscAbort: the payload cannot be a terminal reply; it is user input.
+	oscAbort
+)
+
+// scanOSCReply scans bytes after an ESC ] introducer. On completion it returns
+// the byte count including the terminator, so the caller can drop the reply.
+func scanOSCReply(payload []byte) (size int, result oscScan) {
+	for i, char := range payload {
+		switch {
+		case char == 0x07: // BEL terminator
+			return i + 1, oscComplete
+
+		case char == byte(inputrc.Esc):
+			// The chunk ended right after the ESC of a ST terminator: the
+			// backslash arrives with the next read.
+			if i+1 >= len(payload) {
+				return 0, oscIncomplete
+			}
+
+			if payload[i+1] == '\\' {
+				return i + 2, oscComplete
+			}
+
+			// An escape that does not terminate the payload starts another
+			// sequence: this was never an OSC reply.
+			return 0, oscAbort
+
+		case char == '\r' || char == '\n' || char == 0x03 || char == 0x04:
+			// Enter and interrupt keys must reach the editor immediately.
+			return 0, oscAbort
+		}
+
+		if i >= maxPendingOSC {
+			return 0, oscAbort
+		}
+	}
+
+	return 0, oscIncomplete
 }

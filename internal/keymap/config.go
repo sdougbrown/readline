@@ -33,6 +33,10 @@ var readlineOptions = map[string]interface{}{
 	// that don't reliably answer (PTY test harnesses, minimal emulators,
 	// constrained CI); the engine then falls back to the printed prompt width.
 	"cursor-position-probe": true,
+	// watch-resize controls whether Readline() watches SIGWINCH and refreshes
+	// itself. Hosts that own terminal layout can set it off so the editor does
+	// not paint stale geometry before the host resizes.
+	"watch-resize": true,
 }
 
 // ReloadConfig parses all valid .inputrc configurations and immediately

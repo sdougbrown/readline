@@ -317,6 +317,13 @@ func TestCursor_Char(t *testing.T) {
 }
 
 func TestCursor_ReplaceWith(t *testing.T) {
+	// ReplaceWith writes into its line, so each case runs on a copy of the
+	// shared fixture: mutating it would leak into the other cursor tests.
+	newLine := func() *Line {
+		line := append(Line(nil), cursorLine...)
+		return &line
+	}
+
 	type fields struct {
 		pos  int
 		mark int
@@ -333,13 +340,13 @@ func TestCursor_ReplaceWith(t *testing.T) {
 	}{
 		{
 			name:   "Valid position",
-			fields: fields{line: &cursorLine, pos: 0},
+			fields: fields{line: newLine(), pos: 0},
 			args:   args{char: 's'},
 			want:   's',
 		},
 		{
 			name:   "Negative position (start char)",
-			fields: fields{line: &cursorLine, pos: -1},
+			fields: fields{line: newLine(), pos: -1},
 			args:   args{char: 's'},
 			want:   's',
 		},

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"os"
@@ -238,5 +239,217 @@ func TestKeysAbortEndsAParkedWait(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("a wait after the abort parked again")
+	}
+}
+
+// readFiltered reads and filters every chunk the stub stdin offers, until it
+// reports EOF, and returns the keys that survived the terminal-reply filter.
+func readFiltered(t *testing.T, keys *Keys) []byte {
+	t.Helper()
+
+	var got []byte
+
+	for {
+		chunk, err := keys.readInputFiltered()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return got
+			}
+
+			t.Fatalf("reading input: %v", err)
+		}
+
+		got = append(got, chunk...)
+	}
+}
+
+// assertPendingOSC reports whether the reader is holding an incomplete OSC reply.
+func assertPendingOSC(t *testing.T, keys *Keys, want bool) {
+	t.Helper()
+
+	if got := len(keys.pendingOSC) > 0; got != want {
+		t.Fatalf("pending OSC hold = %t (held %q), want %t", got, keys.pendingOSC, want)
+	}
+}
+
+// TestFilterStripsBELTerminatedOSCReply covers the stray OSC 11 background-color
+// reply a terminal sends with a BEL terminator: it must not reach the key
+// buffer, and the keys around it must.
+func TestFilterStripsBELTerminatedOSCReply(t *testing.T) {
+	withStubStdin(t, readStep{data: []byte("\x1b]11;rgb:2424/2323/2323\x07ab")})
+
+	keys := &Keys{}
+
+	if got := string(readFiltered(t, keys)); got != "ab" {
+		t.Fatalf("filtered keys = %q, want %q", got, "ab")
+	}
+}
+
+// TestFilterStripsSTTerminatedOSCReply covers the same reply with a ST
+// (ESC \) terminator, sandwiched between real keys.
+func TestFilterStripsSTTerminatedOSCReply(t *testing.T) {
+	withStubStdin(t, readStep{data: []byte("a\x1b]11;rgb:2424/2323/2323\x1b\\b")})
+
+	keys := &Keys{}
+
+	if got := string(readFiltered(t, keys)); got != "ab" {
+		t.Fatalf("filtered keys = %q, want %q", got, "ab")
+	}
+}
+
+// TestFilterStripsOSCAndForwardsCursorReply checks that an OSC reply and a
+// cursor-position reply arriving in the same read are both stripped, while the
+// cursor reply still reaches a pending cursor query.
+func TestFilterStripsOSCAndForwardsCursorReply(t *testing.T) {
+	withStubStdin(t, readStep{data: []byte("\x1b]11;rgb:2424/2323/2323\x1b\\\x1b[24;1R")})
+
+	replies := make(chan []byte, 1)
+	keys := &Keys{cursor: replies}
+
+	if got := readFiltered(t, keys); len(got) != 0 {
+		t.Fatalf("filtered keys = %q, want none", got)
+	}
+
+	select {
+	case reply := <-replies:
+		if got := string(reply); got != "\x1b[24;1R" {
+			t.Fatalf("cursor reply = %q, want %q", got, "\x1b[24;1R")
+		}
+	default:
+		t.Fatal("the cursor query did not receive its reply")
+	}
+}
+
+// TestFilterStripsSplitOSCReply covers a reply split across reads: mid-payload,
+// right after the ESC of a ST terminator, and with the trailing key arriving
+// in a later chunk.
+func TestFilterStripsSplitOSCReply(t *testing.T) {
+	withStubStdin(t,
+		readStep{data: []byte("a\x1b]11;rgb:24")},
+		readStep{data: []byte("24/2323")},
+		readStep{data: []byte("\x1b")},
+		readStep{data: []byte("\\b")},
+	)
+
+	keys := &Keys{}
+
+	if got := string(readFiltered(t, keys)); got != "ab" {
+		t.Fatalf("filtered keys = %q, want %q", got, "ab")
+	}
+
+	assertPendingOSC(t, keys, false)
+}
+
+// TestFilterNeverHoldsBareEscape covers the common case of a lone Escape key at
+// the end of a read: only the two-byte OSC introducer may start a hold.
+func TestFilterNeverHoldsBareEscape(t *testing.T) {
+	withStubStdin(t,
+		readStep{data: []byte("a\x1b")},
+		readStep{data: []byte("b")},
+	)
+
+	keys := &Keys{}
+
+	if got := string(readFiltered(t, keys)); got != "a\x1bb" {
+		t.Fatalf("filtered keys = %q, want %q", got, "a\x1bb")
+	}
+
+	assertPendingOSC(t, keys, false)
+}
+
+// TestFilterAbortsUnterminatedOSCOnControlByte checks that an unterminated OSC
+// reply interrupted by Enter or Ctrl-C stops being held, so the user's input is
+// passed through instead of being swallowed.
+func TestFilterAbortsUnterminatedOSCOnControlByte(t *testing.T) {
+	for _, control := range []byte{'\r', '\n', 0x03, 0x04} {
+		input := append([]byte("\x1b]11;rgb:2424"), control)
+
+		withStubStdin(t, readStep{data: input})
+
+		keys := &Keys{}
+
+		if got := readFiltered(t, keys); string(got) != string(input) {
+			t.Fatalf("control byte %q: filtered keys = %q, want %q", control, got, input)
+		}
+
+		assertPendingOSC(t, keys, false)
+	}
+}
+
+// TestFilterAbortsOSCExceedingItsCap checks that a sequence that never
+// terminates is released instead of being held forever.
+func TestFilterAbortsOSCExceedingItsCap(t *testing.T) {
+	input := append([]byte("\x1b]11;rgb:"), bytes.Repeat([]byte("2"), maxPendingOSC+10)...)
+
+	withStubStdin(t, readStep{data: input})
+
+	keys := &Keys{}
+
+	if got := readFiltered(t, keys); string(got) != string(input) {
+		t.Fatalf("filtered keys = %q, want %q", got, input)
+	}
+
+	assertPendingOSC(t, keys, false)
+}
+
+// TestFilterReleasesHeldOSCOnceItGrowsTooLong checks the cap across reads: a
+// hold that exceeds the bound on the next chunk is released, not dropped.
+func TestFilterReleasesHeldOSCOnceItGrowsTooLong(t *testing.T) {
+	first := append([]byte("\x1b]11;rgb:"), bytes.Repeat([]byte("2"), maxPendingOSC-16)...)
+	second := bytes.Repeat([]byte("3"), 32)
+
+	withStubStdin(t,
+		readStep{data: first},
+		readStep{data: second},
+	)
+
+	keys := &Keys{}
+	got := readFiltered(t, keys)
+
+	if want := string(first) + string(second); string(got) != want {
+		t.Fatalf("filtered keys = %q, want %q", got, want)
+	}
+
+	assertPendingOSC(t, keys, false)
+}
+
+// TestFilterKeepsPendingOSCResetOnAbort checks that an aborted read leaves no
+// held bytes behind for a later read, and that a read finishing after Abort
+// cannot re-store pending OSC bytes.
+func TestFilterKeepsPendingOSCResetOnAbort(t *testing.T) {
+	withStubStdin(t, readStep{data: []byte("\x1b]11;rgb:24")})
+
+	keys := &Keys{}
+	keys.readInputFiltered()
+
+	assertPendingOSC(t, keys, true)
+
+	keys.Abort()
+
+	assertPendingOSC(t, keys, false)
+
+	keys.filterOSCReplies([]byte("\x1b]11;rgb:24"))
+
+	assertPendingOSC(t, keys, false)
+}
+
+// TestFilterPreservesMultibyteUTF8 checks that the filter is byte-exact for
+// text: OSC-like bytes inside UTF-8 sequences (0x9c/0x9d are continuation
+// bytes) and normal escape-prefixed keys must pass through untouched.
+func TestFilterPreservesMultibyteUTF8(t *testing.T) {
+	for _, input := range []string{
+		"💩❯Ü",
+		"\x9d11;rgb:2424/2323/2323\x9c",
+		"\x1b[A\x1bb",
+	} {
+		withStubStdin(t, readStep{data: []byte(input)})
+
+		keys := &Keys{}
+
+		if got := string(readFiltered(t, keys)); got != input {
+			t.Fatalf("filtered keys = %q, want %q", got, input)
+		}
+
+		assertPendingOSC(t, keys, false)
 	}
 }
