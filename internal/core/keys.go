@@ -147,9 +147,9 @@ func WaitAvailableKeys(keys *Keys, cfg *inputrc.Config) {
 				keyBuf = []byte(strutil.ConvertMeta([]rune(string(keyBuf))))
 			}
 
-			keys.mutex.RLock()
+			keys.mutex.Lock()
 			keys.buf = append(keys.buf, keyBuf...)
-			keys.mutex.RUnlock()
+			keys.mutex.Unlock()
 		}
 
 		return
