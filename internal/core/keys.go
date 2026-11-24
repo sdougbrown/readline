@@ -520,7 +520,9 @@ func (k *Keys) filterOSCReplies(keys []byte) []byte {
 			}
 
 			k.mutex.Lock()
-			k.pendingOSC = append([]byte(nil), rest...)
+			if !k.eof {
+				k.pendingOSC = append([]byte(nil), rest...)
+			}
 			k.mutex.Unlock()
 
 			return out

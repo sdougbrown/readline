@@ -414,7 +414,8 @@ func TestFilterReleasesHeldOSCOnceItGrowsTooLong(t *testing.T) {
 }
 
 // TestFilterKeepsPendingOSCResetOnAbort checks that an aborted read leaves no
-// held bytes behind for a later read.
+// held bytes behind for a later read, and that a read finishing after Abort
+// cannot re-store pending OSC bytes.
 func TestFilterKeepsPendingOSCResetOnAbort(t *testing.T) {
 	withStubStdin(t, readStep{data: []byte("\x1b]11;rgb:24")})
 
@@ -424,6 +425,10 @@ func TestFilterKeepsPendingOSCResetOnAbort(t *testing.T) {
 	assertPendingOSC(t, keys, true)
 
 	keys.Abort()
+
+	assertPendingOSC(t, keys, false)
+
+	keys.filterOSCReplies([]byte("\x1b]11;rgb:24"))
 
 	assertPendingOSC(t, keys, false)
 }
