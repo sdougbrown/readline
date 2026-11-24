@@ -25,9 +25,6 @@ func (k *Keys) GetCursorPos() (x, y int) {
 		return -1, -1
 	}
 
-	var cursor []byte
-	var match [][]string
-
 	// Flush any buffered frame output first: the cursor position we are about
 	// to query is only correct once the prompt printed so far is actually on
 	// screen, not still sitting in the output buffer.
@@ -55,6 +52,21 @@ func (k *Keys) GetCursorPos() (x, y int) {
 
 	fmt.Print("\x1b[6n")
 
+	x, y, ok := k.readCursorPosFrom(reply, os.Stdin)
+	if !ok {
+		return disable()
+	}
+
+	return x, y
+}
+
+// readCursorPosFrom reads until a cursor-position reply arrives, queuing any
+// ordinary user input read along the way back onto k.buf. Raw stdin chunks are
+// filtered for stray OSC replies so they cannot bypass readInputFiltered.
+func (k *Keys) readCursorPosFrom(reply <-chan []byte, stdin interface{ Read([]byte) (int, error) }) (x, y int, ok bool) {
+	var cursor []byte
+	var match [][]string
+
 	// In order not to get stuck with an input that might be user-one
 	// (like when the user typed before the shell is fully started, and yet not having
 	// queried cursor yet), we keep reading from stdin until we find the cursor response.
@@ -65,9 +77,9 @@ func (k *Keys) GetCursorPos() (x, y int) {
 		} else {
 			buf := make([]byte, keyScanBufSize)
 
-			read, err := os.Stdin.Read(buf)
+			read, err := stdin.Read(buf)
 			if err != nil {
-				return disable()
+				return -1, -1, false
 			}
 
 			cursor = buf[:read]
@@ -75,7 +87,14 @@ func (k *Keys) GetCursorPos() (x, y int) {
 
 		// We have read (or have been passed) something.
 		if len(cursor) == 0 {
-			return disable()
+			return -1, -1, false
+		}
+
+		if reply == nil {
+			cursor = k.filterOSCReplies(cursor)
+			if len(cursor) == 0 {
+				continue
+			}
 		}
 
 		// Attempt to locate cursor response in it.
@@ -83,16 +102,16 @@ func (k *Keys) GetCursorPos() (x, y int) {
 
 		// If there is something but not cursor answer, its user input.
 		if len(match) == 0 && len(cursor) > 0 {
-			k.mutex.RLock()
+			k.mutex.Lock()
 			k.buf = append(k.buf, cursor...)
-			k.mutex.RUnlock()
+			k.mutex.Unlock()
 
 			continue
 		}
 
 		// And if empty, then we should abort.
 		if len(match) == 0 {
-			return disable()
+			return -1, -1, false
 		}
 
 		break
@@ -101,15 +120,15 @@ func (k *Keys) GetCursorPos() (x, y int) {
 	// We know that we have a cursor answer, process it.
 	y, err := strconv.Atoi(match[0][1])
 	if err != nil {
-		return disable()
+		return -1, -1, false
 	}
 
 	x, err = strconv.Atoi(match[0][2])
 	if err != nil {
-		return disable()
+		return -1, -1, false
 	}
 
-	return x, y
+	return x, y, true
 }
 
 func (k *Keys) readInputFiltered() (keys []byte, err error) {
