@@ -98,9 +98,13 @@ func (rl *Shell) Readline() (string, error) {
 		rl.init()
 	}
 
-	// Terminal resize events
-	resize := display.WatchResize(rl.Display)
-	defer close(resize)
+	// Terminal resize events. Hosts that manage their own terminal layout and
+	// redraw on SIGWINCH can turn watch-resize off: the editor then leaves the
+	// resize handling to them, instead of refreshing with pre-resize geometry.
+	if rl.Config.GetBool("watch-resize") {
+		resize := display.WatchResize(rl.Display)
+		defer close(resize)
+	}
 
 	// Async UI refresh: let background goroutines wake an idle loop (e.g. to
 	// show a transient hint pushed from another goroutine) via the input wake
