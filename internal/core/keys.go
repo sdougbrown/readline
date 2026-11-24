@@ -444,9 +444,8 @@ func (k *Keys) Feed(begin bool, keys ...rune) {
 	}
 }
 
-// filterCursorReplies strips terminal replies out of a chunk of input read from
-// stdin (cursor-position responses and OSC responses), forwarding the last
-// cursor-position reply to a pending query if there is one.
+// filterCursorReplies strips cursor-position and OSC replies from stdin input.
+// It forwards the last cursor-position reply to any pending query.
 func (k *Keys) filterCursorReplies(keys []byte) []byte {
 	keys = k.filterOSCReplies(keys)
 
@@ -466,10 +465,9 @@ func (k *Keys) filterCursorReplies(keys []byte) []byte {
 	return rxRcvCursorPos.ReplaceAll(keys, nil)
 }
 
-// filterOSCReplies strips 7-bit OSC responses (\x1b] ... \x07 or \x1b] ... \x1b\\)
-// out of a chunk of input read from stdin. Terminals answer OSC queries (for
-// instance the OSC 11 background-color one) on the same stream we read keys
-// from, and their payload would otherwise be dispatched as user input.
+// filterOSCReplies strips 7-bit OSC replies (\x1b]...\x07 or \x1b]...\x1b\\)
+// from stdin input. Terminals answer queries such as OSC 11 on the same
+// stream as keys, so unfiltered replies would become prompt input.
 //
 // A reply split across reads is held on the Keys until the next chunk completes
 // or rules it out. Only the two-byte introducer \x1b] starts a hold: a bare
@@ -550,9 +548,8 @@ const (
 	oscAbort
 )
 
-// scanOSCReply scans the bytes following an ESC ] introducer. On completion it
-// returns how many of them belong to the sequence (terminator included), so the
-// caller can drop the whole reply and keep the keys around it.
+// scanOSCReply scans bytes after an ESC ] introducer. On completion it returns
+// the byte count including the terminator, so the caller can drop the reply.
 func scanOSCReply(payload []byte) (size int, result oscScan) {
 	for i, char := range payload {
 		switch {

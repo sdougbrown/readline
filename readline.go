@@ -98,9 +98,8 @@ func (rl *Shell) Readline() (string, error) {
 		rl.init()
 	}
 
-	// Terminal resize events. Hosts that manage their own terminal layout and
-	// redraw on SIGWINCH can turn watch-resize off: the editor then leaves the
-	// resize handling to them, instead of refreshing with pre-resize geometry.
+	// Terminal resize events. Hosts managing their own layout on SIGWINCH can
+	// disable watch-resize so the editor does not refresh with stale geometry.
 	if rl.Config.GetBool("watch-resize") {
 		resize := display.WatchResize(rl.Display)
 		defer close(resize)

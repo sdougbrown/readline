@@ -82,9 +82,8 @@ func (k *Keys) readInputFiltered() (keys []byte, err error) {
 
 		// On Windows, windows resize events are sent through stdin,
 		// so if one is detected, send it back to the display engine.
-		// The send is non-blocking: the watcher may not be running (the
-		// watch-resize option is off, or it already returned), and a
-		// blocked send here would stall keyboard input on a resize.
+		// Send non-blocking because the watcher may be off or already exited.
+		// A blocking send here would stall keyboard input on resize.
 		if len(input) == 1 && input[0] == WINDOWS_RESIZE {
 			select {
 			case k.resize <- true:
