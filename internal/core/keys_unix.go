@@ -52,7 +52,7 @@ func (k *Keys) GetCursorPos() (x, y int) {
 
 	fmt.Print("\x1b[6n")
 
-	x, y, ok := k.readCursorPosFrom(reply, os.Stdin)
+	x, y, ok := k.readCursorPosFrom(reply, Stdin)
 	if !ok {
 		return disable()
 	}
